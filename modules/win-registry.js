@@ -68,9 +68,48 @@ function windows_registry()
             throw ('Opening Registry Key: ' + path + ' => Returned Error: ' + err);
         }
   
+
+        if (this._AdvApi.RegQueryValueExW(h.Deref(), key ? key : 0, 0, 0, 0, len).Val == 0)
+        {
+            var data = this._marshal.CreateVariable(len.toBuffer().readUInt32LE());
+            if (this._AdvApi.RegQueryValueExW(h.Deref(), key ? key : 0, 0, valType, data, len).Val == 0)
+            {
+                switch (valType.toBuffer().readUInt32LE())
+                {
+                    case KEY_DATA_TYPES.REG_DWORD:
+                        retVal = data.toBuffer().readUInt32LE();
+                        break;
+                    case KEY_DATA_TYPES.REG_DWORD_BIG_ENDIAN:
+                        retVal = data.toBuffer().readUInt32BE();
+                        break;
+                    case KEY_DATA_TYPES.REG_SZ:
+                    case KEY_DATA_TYPES.REG_EXPAND_SZ:
+                        retVal = data.Wide2UTF8;
+                        break;
+                    case KEY_DATA_TYPES.REG_BINARY:
+                    default:
+                        retVal = data.toBuffer();
+                        retVal._data = data;
+                        retVal._type = valType.toBuffer().readUInt32LE();
+                        break;
+                }
+            }
+        }
+        else
+        {
+            if (key)    // Only throw an exception if an explicit key was specified, becuase it wasn't found. Otherwise, all we know is that a default value wasn't set
+            {
+                this._AdvApi.RegCloseKey(h.Deref());
+                throw ('Not Found');
+            }
+        }
+
+
+
         if ((path == '' && !key) || !key)
         {
-            var result = { subkeys: [], values: [] };
+            var result = { subkeys: [], values: [], default: retVal };
+            if (!key && !retVal) { delete result.default; }
 
             // Enumerate  keys
             var achClass = this._marshal.CreateVariable(1024);
@@ -112,36 +151,6 @@ function windows_registry()
             return (result);
         }
 
-        if(this._AdvApi.RegQueryValueExW(h.Deref(), key, 0, 0, 0, len).Val == 0)
-        {
-            var data = this._marshal.CreateVariable(len.toBuffer().readUInt32LE());
-            if (this._AdvApi.RegQueryValueExW(h.Deref(), key, 0, valType, data, len).Val == 0)
-            {
-                switch(valType.toBuffer().readUInt32LE())
-                {
-                    case KEY_DATA_TYPES.REG_DWORD:
-                        retVal = data.toBuffer().readUInt32LE();
-                        break;
-                    case KEY_DATA_TYPES.REG_DWORD_BIG_ENDIAN:
-                        retVal = data.toBuffer().readUInt32BE();
-                        break;
-                    case KEY_DATA_TYPES.REG_SZ:
-                    case KEY_DATA_TYPES.REG_EXPAND_SZ:
-                        retVal = data.Wide2UTF8;
-                        break;
-                    case KEY_DATA_TYPES.REG_BINARY:
-                    default:
-                        retVal = data.toBuffer();
-                        retVal._data = data;
-                        break;
-                }
-            }
-        }
-        else
-        {
-            this._AdvApi.RegCloseKey(h.Deref());
-            throw ('Not Found');
-        }
         this._AdvApi.RegCloseKey(h.Deref());
         return (retVal);
     };
@@ -212,6 +221,49 @@ function windows_registry()
             }
             this._AdvApi.RegCloseKey(h.Deref());
         }
+    };
+    this.usernameToUserKey = function usernameToUserKey(user)
+    {
+        try
+        {
+            var sid = user;
+            if (typeof (user) == 'string')
+            {
+                var r = this.QueryKey(this.HKEY.LocalMachine, 'SAM\\SAM\\Domains\\Account\\Users\\Names\\' + user);
+                sid = r.default._type;
+            }
+            var u = this.QueryKey(this.HKEY.Users);
+            for(i in u.subkeys)
+            {
+                if(u.subkeys[i].endsWith('-' + sid))
+                {
+                    return (u.subkeys[i]);
+                }
+            }
+        }
+        catch(e)
+        {
+        }
+
+        // Not Found yet, so let's try to brute-force it
+        var entries = this.QueryKey(this.HKEY.Users);
+        for(i in entries.subkeys)
+        {
+            if(entries.subkeys[i].split('-').length>5 && !entries.subkeys[i].endsWith('_Classes'))
+            {
+                try
+                {
+                    if (this.QueryKey(this.HKEY.Users, entries.subkeys[i] + '\\Volatile Environment', 'USERNAME') == user)
+                    {
+                        return (entries.subkeys[i]);
+                    }
+                }
+                catch(ee)
+                {
+                }
+            }
+        }
+        throw ('Unable to determine HKEY_USERS key for: ' + user);
     };
 }
 
